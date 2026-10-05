@@ -114,7 +114,7 @@ jobs:
 
 
       # ==========================================================
-      # PREPARAR DIRETÓRIO TEMPORÁRIO
+      # PREPARAR AMBIENTE
       # ==========================================================
 
       - name: Preparar ambiente
@@ -134,21 +134,26 @@ jobs:
 
 
       # ==========================================================
-      # BAIXAR MALHA MUNICIPAL
+      # BAIXAR GPKG
       # ==========================================================
 
-      - name: Baixar GPKG municipal
+      - name: Baixar malha municipal RJ
         shell: bash
         run: |
 
           set -e
 
           echo "=================================================="
-          echo "BAIXANDO MALHA MUNICIPAL"
+          echo "BAIXANDO MALHA MUNICIPAL DO RJ"
           echo "=================================================="
 
+          echo ""
           echo "URL:"
           echo "${CEMADEN_GPKG_URL}"
+
+          echo ""
+          echo "Destino:"
+          echo "${CEMADEN_GPKG}"
 
           curl \
             --fail \
@@ -198,19 +203,6 @@ jobs:
         run: |
 
           cat > atualiza_cemaden.R <<'EOF_R'
-
-          # ==========================================================
-          # ATUALIZAÇÃO DOS DADOS DO CEMADEN
-          #
-          # Autoria:
-          # Eduardo Peixoto - CIEVS/RJ
-          #
-          # Saída:
-          # base_cemaden.rda
-          #
-          # O arquivo é salvo diretamente na raiz do repositório.
-          # ==========================================================
-
 
           options(
             warn = 1,
@@ -641,19 +633,30 @@ jobs:
               }
 
 
-              tabela |>
+              # ------------------------------------------------------
+              # CORREÇÃO:
+              # não usar nrow(.) dentro de magrittr::extract()
+              # ------------------------------------------------------
 
-                magrittr::extract(
+              tabela <- tabela[
 
-                  -nrow(.),
+                seq_len(
+                  nrow(tabela) - 1
+                ),
 
-                  ,
+                ,
 
-                  drop = FALSE
+                drop = FALSE
 
-                ) |>
+              ]
 
-                janitor::clean_names()
+
+              tabela <- janitor::clean_names(
+                tabela
+              )
+
+
+              tabela
 
             }
 
@@ -767,25 +770,16 @@ jobs:
 
                   regiao =
                     stringr::str_extract(
-
                       value,
-
                       "^[^-]+"
-
                     ) |>
-
                     stringr::str_trim(),
-
 
                   nivel =
                     stringr::str_extract(
-
                       value,
-
                       "(?<=- ).*(?=-)"
-
                     ) |>
-
                     stringr::str_trim()
 
                 ) |>
@@ -923,7 +917,7 @@ jobs:
 
 
           # ==========================================================
-          # CARREGAR MALHA
+          # CARREGAR MALHA MUNICIPAL
           # ==========================================================
 
           cat("\n")
@@ -1263,7 +1257,7 @@ jobs:
 
 
           # ==========================================================
-          # MANTER EXATAMENTE 92 MUNICÍPIOS
+          # 92 MUNICÍPIOS
           # ==========================================================
 
           rj_mun <- head(
@@ -1276,7 +1270,7 @@ jobs:
 
 
           # ==========================================================
-          # VALIDAÇÃO
+          # VALIDAÇÃO FINAL
           # ==========================================================
 
           cat("\n")
@@ -1408,12 +1402,13 @@ jobs:
 
 
           # ==========================================================
-          # SALVAR SOMENTE NA RAIZ DO PROJETO
+          # SALVAR SOMENTE BASE_CEMADEN.RDA
+          # NA RAIZ DO REPOSITÓRIO
           # ==========================================================
 
           cat("\n")
           cat("============================================================\n")
-          cat("SALVANDO BASE\n")
+          cat("SALVANDO BASE NA RAIZ\n")
           cat("============================================================\n")
 
 
@@ -1425,10 +1420,6 @@ jobs:
 
           )
 
-
-          # ==========================================================
-          # VALIDAR ARQUIVO
-          # ==========================================================
 
           if (
             !file.exists(output_path)
@@ -1490,34 +1481,20 @@ jobs:
           )
 
 
-          # ==========================================================
-          # FINAL
-          # ==========================================================
-
           cat("\n")
           cat("============================================================\n")
           cat(" CEMADEN/RJ ATUALIZADO COM SUCESSO\n")
           cat("============================================================\n")
 
 
-          cat(
-            "Fim:",
-            format(
-              Sys.time(),
-              "%Y-%m-%d %H:%M:%S"
-            ),
-            "\n"
-          )
-
-
           EOF_R
 
 
       # ==========================================================
-      # EXECUTAR SCRIPT
+      # EXECUTAR SCRAPING
       # ==========================================================
 
-      - name: Executar atualização
+      - name: Executar atualização CEMADEN
         shell: bash
         run: |
 
@@ -1533,7 +1510,7 @@ jobs:
 
           echo ""
           echo "=================================================="
-          echo "VALIDAÇÃO DO RESULTADO"
+          echo "VALIDANDO ARQUIVO GERADO"
           echo "=================================================="
 
 
@@ -1555,17 +1532,14 @@ jobs:
           fi
 
 
-          echo ""
-          echo "Arquivo gerado:"
-
           ls -lh base_cemaden.rda
 
 
       # ==========================================================
-      # VALIDAR RDA
+      # VALIDAR CONTEÚDO DO RDA
       # ==========================================================
 
-      - name: Validar RDA
+      - name: Validar conteúdo do RDA
         shell: bash
         run: |
 
@@ -1597,7 +1571,7 @@ jobs:
           ) {
 
             stop(
-              "Objeto rj_mun não é sf."
+              "Objeto rj_mun não é um objeto sf."
             )
 
           }
@@ -1644,13 +1618,10 @@ jobs:
 
 
       # ==========================================================
-      # COMMIT E PUSH
+      # COMMIT + PUSH
       #
-      # O ÚNICO ARQUIVO GERADO/PERSISTIDO PELO WORKFLOW É:
-      #
-      #     base_cemaden.rda
-      #
-      # NA RAIZ DO REPOSITÓRIO.
+      # SOMENTE base_cemaden.rda
+      # É SALVO NA RAIZ DO REPOSITÓRIO.
       # ==========================================================
 
       - name: Salvar base na raiz do projeto
@@ -1660,7 +1631,7 @@ jobs:
           set -e
 
           echo "=================================================="
-          echo "SALVANDO BASE NA RAIZ DO PROJETO"
+          echo "SALVANDO base_cemaden.rda"
           echo "=================================================="
 
 
@@ -1681,9 +1652,12 @@ jobs:
           if git diff --cached --quiet; then
 
             echo ""
-            echo "A base não sofreu alterações."
+            echo "Nenhuma alteração na base."
 
           else
+
+            echo ""
+            echo "Alteração detectada."
 
             git commit \
               -m "Atualização CEMADEN RJ"
@@ -1703,14 +1677,15 @@ jobs:
 
             echo ""
             echo "=================================================="
-            echo "BASE SALVA COM SUCESSO"
+            echo "BASE CEMADEN SALVA NA RAIZ DO PROJETO"
             echo "=================================================="
+
 
           fi
 
 
           echo ""
-          echo "Arquivo final na raiz:"
+          echo "Arquivo final:"
 
           ls -lh \
             base_cemaden.rda
