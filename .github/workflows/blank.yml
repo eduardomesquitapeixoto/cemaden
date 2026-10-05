@@ -13,9 +13,12 @@ concurrency:
   group: atualizacao-cemaden-rj
   cancel-in-progress: false
 
+
 jobs:
 
   atualizar-cemaden:
+
+    name: Atualizar CEMADEN RJ
 
     runs-on: ubuntu-22.04
 
@@ -23,8 +26,8 @@ jobs:
 
     env:
       CEMADEN_GPKG: /tmp/cemaden/rj_mun.gpkg
-      CEMADEN_OUTPUT: base_cemaden.rda
       CEMADEN_GPKG_URL: https://cisshiny.saude.rj.gov.br/docs/rj_mun.gpkg
+      CEMADEN_OUTPUT: base_cemaden.rda
 
     steps:
 
@@ -32,8 +35,10 @@ jobs:
       # CHECKOUT
       # ==========================================================
 
-      - name: Checkout
+      - name: Checkout do repositório
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
 
       # ==========================================================
@@ -78,9 +83,11 @@ jobs:
             libtiff5-dev \
             libjpeg-dev
 
+          echo ""
           echo "GDAL:"
           gdalinfo --version
 
+          echo ""
           echo "OGR:"
           ogrinfo --version
 
@@ -89,12 +96,10 @@ jobs:
       # PACOTES R
       # ==========================================================
 
-      - name: Instalar dependências R
+      - name: Instalar pacotes R
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
-
           packages: |
-            any::logger
             any::purrr
             any::httr
             any::dplyr
@@ -105,32 +110,38 @@ jobs:
             any::magrittr
             any::rlang
             any::sf
-
-          needs: |
-            any::logger
-            any::purrr
-            any::httr
-            any::dplyr
-            any::stringr
-            any::xml2
-            any::rvest
-            any::janitor
-            any::magrittr
-            any::rlang
-            any::sf
+            any::tibble
 
 
       # ==========================================================
-      # BAIXAR MALHA MUNICIPAL
+      # PREPARAR DIRETÓRIO TEMPORÁRIO
       # ==========================================================
 
-      - name: Baixar malha municipal RJ
+      - name: Preparar ambiente
         shell: bash
         run: |
 
           set -e
 
           mkdir -p /tmp/cemaden
+
+          rm -f \
+            /tmp/cemaden/rj_mun.gpkg \
+            base_cemaden.rda \
+            atualiza_cemaden.R
+
+          echo "Ambiente preparado."
+
+
+      # ==========================================================
+      # BAIXAR MALHA MUNICIPAL
+      # ==========================================================
+
+      - name: Baixar GPKG municipal
+        shell: bash
+        run: |
+
+          set -e
 
           echo "=================================================="
           echo "BAIXANDO MALHA MUNICIPAL"
@@ -146,20 +157,25 @@ jobs:
             --silent \
             --retry 10 \
             --retry-delay 5 \
-            --retry-max-time 300 \
+            --retry-max-time 600 \
             --connect-timeout 30 \
-            --max-time 300 \
+            --max-time 600 \
             --user-agent "Mozilla/5.0 GitHub-Actions-CEMADEN-RJ" \
             "${CEMADEN_GPKG_URL}" \
             -o "${CEMADEN_GPKG}"
 
+          if [ ! -f "${CEMADEN_GPKG}" ]; then
+            echo "ERRO: GPKG não foi criado."
+            exit 1
+          fi
+
           if [ ! -s "${CEMADEN_GPKG}" ]; then
-            echo "ERRO: GPKG não foi baixado."
+            echo "ERRO: GPKG está vazio."
             exit 1
           fi
 
           echo ""
-          echo "Arquivo baixado:"
+          echo "GPKG baixado:"
           ls -lh "${CEMADEN_GPKG}"
 
           echo ""
@@ -170,18 +186,31 @@ jobs:
             "${CEMADEN_GPKG}"
 
           echo ""
-          echo "GPKG validado com sucesso."
+          echo "GPKG validado."
 
 
       # ==========================================================
-      # CRIAR SCRIPT R INLINE
+      # CRIAR SCRIPT R
       # ==========================================================
 
-      - name: Criar script CEMADEN
+      - name: Criar script R
         shell: bash
         run: |
 
           cat > atualiza_cemaden.R <<'EOF_R'
+
+          # ==========================================================
+          # ATUALIZAÇÃO DOS DADOS DO CEMADEN
+          #
+          # Autoria:
+          # Eduardo Peixoto - CIEVS/RJ
+          #
+          # Saída:
+          # base_cemaden.rda
+          #
+          # O arquivo é salvo diretamente na raiz do repositório.
+          # ==========================================================
+
 
           options(
             warn = 1,
@@ -189,9 +218,9 @@ jobs:
           )
 
 
-          # ======================================================
+          # ==========================================================
           # PACOTES
-          # ======================================================
+          # ==========================================================
 
           suppressPackageStartupMessages({
 
@@ -205,32 +234,41 @@ jobs:
             library(magrittr)
             library(rlang)
             library(sf)
+            library(tibble)
 
           })
 
 
-          # ======================================================
-          # CONFIGURAÇÃO
-          # ======================================================
+          # ==========================================================
+          # CONFIGURAÇÕES
+          # ==========================================================
 
           gpkg_path <- Sys.getenv(
             "CEMADEN_GPKG",
             "/tmp/cemaden/rj_mun.gpkg"
           )
 
+
           output_path <- Sys.getenv(
             "CEMADEN_OUTPUT",
             "base_cemaden.rda"
           )
 
-          base_url <-
+
+          base_url_http <-
+            "http://painelcemadenrj.defesacivil.rj.gov.br"
+
+
+          base_url_https <-
             "https://painelcemadenrj.defesacivil.rj.gov.br"
 
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" ATUALIZAÇÃO DOS DADOS DO CEMADEN/RJ\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("             ATUALIZAÇÃO CEMADEN/RJ\n")
+          cat("============================================================\n")
+          cat("\n")
+
 
           cat(
             "Início:",
@@ -242,9 +280,23 @@ jobs:
           )
 
 
-          # ======================================================
+          cat(
+            "GPKG:",
+            gpkg_path,
+            "\n"
+          )
+
+
+          cat(
+            "Saída:",
+            output_path,
+            "\n"
+          )
+
+
+          # ==========================================================
           # FUNÇÃO ROBUSTA DE DOWNLOAD
-          # ======================================================
+          # ==========================================================
 
           baixar_html <- function(
             url,
@@ -252,21 +304,29 @@ jobs:
           ) {
 
             cat("\n")
-            cat("URL:", url, "\n")
+            cat("------------------------------------------------------------\n")
+            cat("URL:\n")
+            cat(url)
+            cat("\n")
+            cat("------------------------------------------------------------\n")
+
 
             ultimo_erro <- NULL
+
 
             for (
               tentativa in seq_len(tentativas)
             ) {
 
               cat(
-                "Tentativa",
+                "Tentativa ",
                 tentativa,
                 "/",
                 tentativas,
-                "\n"
+                "\n",
+                sep = ""
               )
+
 
               resultado <- tryCatch({
 
@@ -275,20 +335,32 @@ jobs:
                   url,
 
                   httr::config(
-                    ssl_verifypeer = 0L
+                    ssl_verifypeer = 0L,
+                    ssl_verifyhost = 0L
                   ),
 
-                  httr::timeout(90),
+                  httr::timeout(
+                    90
+                  ),
 
                   httr::user_agent(
+
                     paste0(
+
                       "Mozilla/5.0 ",
+
                       "(X11; Linux x86_64) ",
+
                       "AppleWebKit/537.36 ",
+
                       "(KHTML, like Gecko) ",
+
                       "Chrome/154.0.0.0 ",
+
                       "Safari/537.36"
+
                     )
+
                   )
 
                 )
@@ -322,19 +394,35 @@ jobs:
 
 
                 texto <- httr::content(
+
                   resposta,
+
                   as = "text",
+
                   encoding = "UTF-8"
+
                 )
 
 
                 if (
-                  is.null(texto) ||
-                  !nzchar(trimws(texto))
+                  is.null(texto)
                 ) {
 
                   stop(
-                    "Resposta vazia"
+                    "Resposta NULL."
+                  )
+
+                }
+
+
+                if (
+                  !nzchar(
+                    trimws(texto)
+                  )
+                ) {
+
+                  stop(
+                    "Resposta vazia."
                   )
 
                 }
@@ -348,11 +436,13 @@ jobs:
                 ultimo_erro <<-
                   conditionMessage(e)
 
+
                 cat(
-                  "ERRO:",
+                  "Erro:",
                   ultimo_erro,
                   "\n"
                 )
+
 
                 NULL
 
@@ -363,6 +453,10 @@ jobs:
                 !is.null(resultado)
               ) {
 
+                cat(
+                  "Acesso realizado com sucesso.\n"
+                )
+
                 return(
                   resultado
                 )
@@ -370,68 +464,104 @@ jobs:
               }
 
 
-              espera <- min(
-                5 * tentativa,
-                30
-              )
+              if (
+                tentativa < tentativas
+              ) {
+
+                espera <- min(
+                  5 * tentativa,
+                  30
+                )
 
 
-              cat(
-                "Aguardando",
-                espera,
-                "segundos...\n"
-              )
+                cat(
+                  "Aguardando ",
+                  espera,
+                  " segundos...\n",
+                  sep = ""
+                )
 
 
-              Sys.sleep(
-                espera
-              )
+                Sys.sleep(
+                  espera
+                )
+
+              }
 
             }
 
 
             stop(
+
               paste(
+
                 "Falha ao acessar",
+
                 url,
-                "|",
+
+                "após",
+
+                tentativas,
+
+                "tentativas.",
+
+                "Último erro:",
+
                 ultimo_erro
+
               ),
+
               call. = FALSE
+
             )
 
           }
 
 
-          # ======================================================
+          # ==========================================================
           # VALIDAR GPKG
-          # ======================================================
+          # ==========================================================
 
           if (
             !file.exists(gpkg_path)
           ) {
 
             stop(
+
               paste(
                 "GPKG não encontrado:",
                 gpkg_path
               ),
+
+              call. = FALSE
+
+            )
+
+          }
+
+
+          if (
+            file.info(gpkg_path)$size <= 0
+          ) {
+
+            stop(
+              "GPKG está vazio.",
               call. = FALSE
             )
 
           }
 
 
-          # ======================================================
+          # ==========================================================
           # WEBSCRAPING 1
           # HIDROLÓGICO + GEOLÓGICO
-          # ======================================================
+          # ==========================================================
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" WEBSCRAPING 1\n")
-          cat(" HIDROLÓGICO + GEOLÓGICO\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("WEBSCRAPING 1\n")
+          cat("HIDROLÓGICO + GEOLÓGICO\n")
+          cat("============================================================\n")
 
 
           base1 <- purrr::map(
@@ -445,7 +575,7 @@ jobs:
 
               url <- paste0(
 
-                base_url,
+                base_url_http,
 
                 "/monitoramento/v2/municipio/?action=",
 
@@ -471,18 +601,25 @@ jobs:
               ) {
 
                 stop(
+
                   paste(
-                    "Nenhuma tabela encontrada:",
+                    "Nenhuma tabela encontrada para",
                     tipo
-                  )
+                  ),
+
+                  call. = FALSE
+
                 )
 
               }
 
 
               tabela <- purrr::pluck(
+
                 tabelas,
+
                 1
+
               )
 
 
@@ -491,10 +628,14 @@ jobs:
               ) {
 
                 stop(
+
                   paste(
-                    "Tabela vazia:",
+                    "Tabela vazia para",
                     tipo
-                  )
+                  ),
+
+                  call. = FALSE
+
                 )
 
               }
@@ -503,9 +644,13 @@ jobs:
               tabela |>
 
                 magrittr::extract(
+
                   -nrow(.),
+
                   ,
+
                   drop = FALSE
+
                 ) |>
 
                 janitor::clean_names()
@@ -515,16 +660,23 @@ jobs:
           ) |>
 
             purrr::reduce(
+
               full_join,
+
               by = "municipio"
+
             ) |>
 
             janitor::clean_names() |>
 
-            arrange(
+            dplyr::arrange(
               municipio
             )
 
+
+          # ==========================================================
+          # RENOMEAR COLUNAS
+          # ==========================================================
 
           base1 <- rlang::set_names(
 
@@ -553,22 +705,22 @@ jobs:
 
 
           cat(
-            "Registros:",
+            "Registros base1:",
             nrow(base1),
             "\n"
           )
 
 
-          # ======================================================
+          # ==========================================================
           # WEBSCRAPING 2
           # METEOROLÓGICO + INCÊNDIO
-          # ======================================================
+          # ==========================================================
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" WEBSCRAPING 2\n")
-          cat(" METEOROLÓGICO + INCÊNDIO\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("WEBSCRAPING 2\n")
+          cat("METEOROLÓGICO + INCÊNDIO\n")
+          cat("============================================================\n")
 
 
           base2 <- purrr::map(
@@ -582,7 +734,7 @@ jobs:
 
               url <- paste0(
 
-                base_url,
+                base_url_http,
 
                 "/monitoramento/v2/mapa/redec.php?action=",
 
@@ -611,29 +763,38 @@ jobs:
 
                 tibble::as_tibble() |>
 
-                mutate(
+                dplyr::mutate(
 
                   regiao =
-                    str_extract(
+                    stringr::str_extract(
+
                       value,
+
                       "^[^-]+"
+
                     ) |>
-                    str_trim(),
+
+                    stringr::str_trim(),
+
 
                   nivel =
-                    str_extract(
+                    stringr::str_extract(
+
                       value,
+
                       "(?<=- ).*(?=-)"
+
                     ) |>
-                    str_trim()
+
+                    stringr::str_trim()
 
                 ) |>
 
-                select(
+                dplyr::select(
                   -value
                 ) |>
 
-                clean_names()
+                janitor::clean_names()
 
 
               if (
@@ -641,10 +802,14 @@ jobs:
               ) {
 
                 stop(
+
                   paste(
-                    "Nenhuma região encontrada:",
+                    "Nenhuma região encontrada para action",
                     tipo
-                  )
+                  ),
+
+                  call. = FALSE
+
                 )
 
               }
@@ -657,13 +822,16 @@ jobs:
           ) |>
 
             purrr::reduce(
+
               full_join,
+
               by = "regiao"
+
             ) |>
 
-            clean_names() |>
+            janitor::clean_names() |>
 
-            mutate(
+            dplyr::mutate(
 
               risco_metereologico =
                 nivel_x,
@@ -673,26 +841,35 @@ jobs:
 
             ) |>
 
-            select(
+            dplyr::select(
+
               -nivel_x,
+
               -nivel_y
+
             )
 
 
           cat(
-            "Regiões:",
+            "Regiões base2:",
             nrow(base2),
             "\n"
           )
 
 
-          # ======================================================
+          # ==========================================================
           # CONSOLIDAÇÃO
-          # ======================================================
+          # ==========================================================
+
+          cat("\n")
+          cat("============================================================\n")
+          cat("CONSOLIDAÇÃO\n")
+          cat("============================================================\n")
+
 
           base3 <- base1 |>
 
-            select(
+            dplyr::select(
 
               municipio,
 
@@ -704,16 +881,16 @@ jobs:
 
             ) |>
 
-            mutate(
+            dplyr::mutate(
 
               regiao =
-                str_squish(
+                stringr::str_squish(
                   redec_hidrologico
                 )
 
             ) |>
 
-            full_join(
+            dplyr::full_join(
 
               base2,
 
@@ -721,7 +898,7 @@ jobs:
 
             ) |>
 
-            select(
+            dplyr::select(
 
               regiao,
 
@@ -738,14 +915,21 @@ jobs:
             )
 
 
-          # ======================================================
-          # MALHA MUNICIPAL
-          # ======================================================
+          cat(
+            "Registros base3:",
+            nrow(base3),
+            "\n"
+          )
+
+
+          # ==========================================================
+          # CARREGAR MALHA
+          # ==========================================================
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" MALHA MUNICIPAL\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("CARREGANDO MALHA MUNICIPAL\n")
+          cat("============================================================\n")
 
 
           rj_mun <- sf::read_sf(
@@ -758,7 +942,7 @@ jobs:
 
 
           cat(
-            "Registros da malha:",
+            "Registros originais:",
             nrow(rj_mun),
             "\n"
           )
@@ -769,7 +953,11 @@ jobs:
           ) {
 
             stop(
-              "Coluna name_muni não encontrada."
+
+              "Coluna 'name_muni' não encontrada no GPKG.",
+
+              call. = FALSE
+
             )
 
           }
@@ -777,7 +965,7 @@ jobs:
 
           rj_mun <- rj_mun |>
 
-            mutate(
+            dplyr::mutate(
 
               mun_tipo_6 =
                 toupper(
@@ -786,7 +974,7 @@ jobs:
 
             ) |>
 
-            full_join(
+            dplyr::full_join(
 
               base3,
 
@@ -798,34 +986,39 @@ jobs:
             )
 
 
-          # ======================================================
+          # ==========================================================
           # WEBSCRAPING 3
           # HISTÓRICO DA REDEC
-          # ======================================================
+          # ==========================================================
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" WEBSCRAPING 3\n")
-          cat(" HISTÓRICO DA REDEC\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("WEBSCRAPING 3\n")
+          cat("HISTÓRICO DA REDEC\n")
+          cat("============================================================\n")
 
 
           url_historico <- paste0(
 
-            base_url,
+            base_url_https,
 
             "/monitoramento/v2/mapa/redec.php?action=2"
 
           )
 
 
-          page <- baixar_html(
+          html_historico <- baixar_html(
 
             url_historico
 
-          ) |>
+          )
 
-            xml2::read_html()
+
+          page <- xml2::read_html(
+
+            html_historico
+
+          )
 
 
           ul_element <- rvest::html_elements(
@@ -837,22 +1030,26 @@ jobs:
           )
 
 
+          if (
+            length(ul_element) == 0
+          ) {
+
+            stop(
+
+              "ul.list-group não encontrado.",
+
+              call. = FALSE
+
+            )
+
+          }
+
+
           html_table <- rvest::html_text(
 
             ul_element
 
           )
-
-
-          if (
-            length(html_table) == 0
-          ) {
-
-            stop(
-              "ul.list-group não encontrado."
-            )
-
-          }
 
 
           table_rows <- strsplit(
@@ -865,9 +1062,39 @@ jobs:
 
 
           table_rows <- trimws(
+
             table_rows
+
           )
 
+
+          table_rows <- table_rows[
+
+            nzchar(
+              table_rows
+            )
+
+          ]
+
+
+          if (
+            length(table_rows) == 0
+          ) {
+
+            stop(
+
+              "Nenhuma linha encontrada no histórico da REDEC.",
+
+              call. = FALSE
+
+            )
+
+          }
+
+
+          # ==========================================================
+          # TRANSFORMAR HISTÓRICO
+          # ==========================================================
 
           table_data <- lapply(
 
@@ -876,9 +1103,13 @@ jobs:
             function(row) {
 
               region <- gsub(
+
                 " - .*",
+
                 "",
+
                 row
+
               )
 
 
@@ -906,13 +1137,17 @@ jobs:
 
               data.frame(
 
-                Region = region,
+                Region =
+                  region,
 
-                Status = status,
+                Status =
+                  status,
 
-                History = history,
+                History =
+                  history,
 
-                stringsAsFactors = FALSE
+                stringsAsFactors =
+                  FALSE
 
               )
 
@@ -939,9 +1174,13 @@ jobs:
           )
 
 
+          # ==========================================================
+          # EXTRAIR STATUS
+          # ==========================================================
+
           table_df$Status <-
 
-            str_extract(
+            stringr::str_extract(
 
               table_df$Status,
 
@@ -949,18 +1188,18 @@ jobs:
 
             ) |>
 
-            str_trim()
+            stringr::str_trim()
 
 
           table_df$regiao <-
             table_df$Region
 
 
-          # ======================================================
+          # ==========================================================
           # JOIN FINAL
-          # ======================================================
+          # ==========================================================
 
-          a <- full_join(
+          a <- dplyr::full_join(
 
             rj_mun,
 
@@ -970,6 +1209,10 @@ jobs:
 
           )
 
+
+          # ==========================================================
+          # STATUS -> RISCO DE INCÊNDIO
+          # ==========================================================
 
           if (
             "Status" %in% names(a)
@@ -983,23 +1226,25 @@ jobs:
           }
 
 
-          # ======================================================
+          # ==========================================================
           # CORREÇÃO ORIGINAL
-          # ======================================================
+          # ==========================================================
 
           if (
-            nrow(a) >= 93 &&
-            nrow(a) >= 5
+            nrow(a) >= 93
           ) {
 
             a$risco_atual_hidrologico[5] <-
               a$risco_atual_hidrologico[93]
 
+
             a$risco_atual_geologico[5] <-
               a$risco_atual_geologico[93]
 
+
             a$risco_incendio[5] <-
               a$risco_incendio[93]
+
 
             if (
               "Region" %in% names(a)
@@ -1010,30 +1255,34 @@ jobs:
 
             }
 
+
             a$regiao[5] <-
               "BAIXADA LITORÂNEA"
 
           }
 
 
-          # ======================================================
-          # MANTER 92 MUNICÍPIOS
-          # ======================================================
+          # ==========================================================
+          # MANTER EXATAMENTE 92 MUNICÍPIOS
+          # ==========================================================
 
           rj_mun <- head(
+
             a,
+
             92
+
           )
 
 
-          # ======================================================
-          # VALIDAÇÃO FINAL
-          # ======================================================
+          # ==========================================================
+          # VALIDAÇÃO
+          # ==========================================================
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" VALIDAÇÃO FINAL\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("VALIDAÇÃO FINAL\n")
+          cat("============================================================\n")
 
 
           cat(
@@ -1058,7 +1307,7 @@ jobs:
 
               paste0(
 
-                "Esperados 92 municípios; encontrados ",
+                "ERRO: esperado 92 municípios; encontrado ",
 
                 nrow(rj_mun)
 
@@ -1103,7 +1352,7 @@ jobs:
 
               paste0(
 
-                "Colunas ausentes: ",
+                "ERRO: colunas ausentes: ",
 
                 paste(
                   faltantes,
@@ -1128,6 +1377,13 @@ jobs:
           )
 
 
+          cat(
+            "Municípios válidos:",
+            municipios_validos,
+            "\n"
+          )
+
+
           if (
             municipios_validos != 92
           ) {
@@ -1136,11 +1392,11 @@ jobs:
 
               paste0(
 
-                "Municípios válidos: ",
+                "ERRO: encontrados ",
 
                 municipios_validos,
 
-                ". Esperado: 92."
+                " municípios válidos; esperado 92."
 
               ),
 
@@ -1151,14 +1407,14 @@ jobs:
           }
 
 
-          # ======================================================
-          # EXPORTAÇÃO
-          # ======================================================
+          # ==========================================================
+          # SALVAR SOMENTE NA RAIZ DO PROJETO
+          # ==========================================================
 
           cat("\n")
-          cat("====================================================\n")
-          cat(" EXPORTAÇÃO\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+          cat("SALVANDO BASE\n")
+          cat("============================================================\n")
 
 
           save(
@@ -1170,76 +1426,129 @@ jobs:
           )
 
 
-          writeLines(
+          # ==========================================================
+          # VALIDAR ARQUIVO
+          # ==========================================================
 
-            c(
+          if (
+            !file.exists(output_path)
+          ) {
 
-              "STATUS: SUCESSO",
+            stop(
 
-              paste0(
-                "REGISTROS: ",
-                nrow(rj_mun)
-              ),
+              "ERRO: base_cemaden.rda não foi criada.",
 
-              paste0(
-                "COLUNAS: ",
-                ncol(rj_mun)
-              ),
+              call. = FALSE
 
-              paste0(
-                "DATA: ",
-                format(
-                  Sys.time(),
-                  "%Y-%m-%d %H:%M:%S"
-                )
-              ),
+            )
 
-              paste0(
-                "GPKG: ",
-                gpkg_path
-              ),
+          }
 
-              paste0(
-                "URL_GPKG: ",
-                Sys.getenv(
-                  "CEMADEN_GPKG_URL"
-                )
-              )
 
+          tamanho <- file.info(
+            output_path
+          )$size
+
+
+          if (
+            is.na(tamanho) ||
+            tamanho <= 0
+          ) {
+
+            stop(
+
+              "ERRO: base_cemaden.rda está vazia.",
+
+              call. = FALSE
+
+            )
+
+          }
+
+
+          cat(
+            "Arquivo:",
+            normalizePath(
+              output_path,
+              mustWork = FALSE
             ),
-
-            "cemaden_status.txt"
-
+            "\n"
           )
 
 
+          cat(
+            "Tamanho:",
+            tamanho,
+            "bytes\n"
+          )
+
+
+          cat(
+            "Municípios:",
+            nrow(rj_mun),
+            "\n"
+          )
+
+
+          # ==========================================================
+          # FINAL
+          # ==========================================================
+
           cat("\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
           cat(" CEMADEN/RJ ATUALIZADO COM SUCESSO\n")
-          cat("====================================================\n")
+          cat("============================================================\n")
+
+
+          cat(
+            "Fim:",
+            format(
+              Sys.time(),
+              "%Y-%m-%d %H:%M:%S"
+            ),
+            "\n"
+          )
 
 
           EOF_R
 
 
       # ==========================================================
-      # EXECUTAR COLETOR
+      # EXECUTAR SCRIPT
       # ==========================================================
 
-      - name: Executar coletor CEMADEN
-
+      - name: Executar atualização
         shell: bash
-
         run: |
 
           set -e
 
+          echo "=================================================="
+          echo "EXECUTANDO SCRAPING CEMADEN"
+          echo "=================================================="
+
+
           Rscript atualiza_cemaden.R
+
+
+          echo ""
+          echo "=================================================="
+          echo "VALIDAÇÃO DO RESULTADO"
+          echo "=================================================="
+
+
+          if [ ! -f base_cemaden.rda ]; then
+
+            echo "ERRO: base_cemaden.rda não existe."
+
+            exit 1
+
+          fi
 
 
           if [ ! -s base_cemaden.rda ]; then
 
-            echo "ERRO: base_cemaden.rda não foi criada."
+            echo "ERRO: base_cemaden.rda está vazio."
 
             exit 1
 
@@ -1247,25 +1556,17 @@ jobs:
 
 
           echo ""
-          echo "Base gerada:"
+          echo "Arquivo gerado:"
 
           ls -lh base_cemaden.rda
-
-
-          echo ""
-          echo "Status:"
-
-          cat cemaden_status.txt
 
 
       # ==========================================================
       # VALIDAR RDA
       # ==========================================================
 
-      - name: Validar base RDA
-
+      - name: Validar RDA
         shell: bash
-
         run: |
 
           set -e
@@ -1283,6 +1584,20 @@ jobs:
 
             stop(
               "Objeto rj_mun não encontrado."
+            )
+
+          }
+
+
+          if (
+            !inherits(
+              rj_mun,
+              "sf"
+            )
+          ) {
+
+            stop(
+              "Objeto rj_mun não é sf."
             )
 
           }
@@ -1308,7 +1623,7 @@ jobs:
 
 
           cat(
-            "VALIDAÇÃO RDA OK\n"
+            "RDA VALIDADO COM SUCESSO\n"
           )
 
 
@@ -1329,240 +1644,73 @@ jobs:
 
 
       # ==========================================================
-      # ARTEFATO
+      # COMMIT E PUSH
+      #
+      # O ÚNICO ARQUIVO GERADO/PERSISTIDO PELO WORKFLOW É:
+      #
+      #     base_cemaden.rda
+      #
+      # NA RAIZ DO REPOSITÓRIO.
       # ==========================================================
 
-      - name: Publicar artefato
-
-        if: always()
-
-        uses: actions/upload-artifact@v4
-
-        with:
-
-          name: base-cemaden-rj
-
-          path: |
-
-            base_cemaden.rda
-
-            cemaden_status.txt
-
-          retention-days: 30
-
-
-      # ==========================================================
-      # COMMITAR RESULTADOS
-      # ==========================================================
-
-      - name: Commitar resultados
-
-        if: always()
-
+      - name: Salvar base na raiz do projeto
         shell: bash
-
         run: |
 
           set -e
 
-          git config --global user.name \
+          echo "=================================================="
+          echo "SALVANDO BASE NA RAIZ DO PROJETO"
+          echo "=================================================="
+
+
+          git config \
+            user.name \
             "github-actions[bot]"
 
-          git config --global user.email \
-            "github-actions[bot]@users.noreply.github.com"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
 
           git add \
-            base_cemaden.rda \
-            cemaden_status.txt
+            base_cemaden.rda
 
 
-          if ! git diff --cached --quiet; then
+          if git diff --cached --quiet; then
 
-            git commit \
-              -m "🌧️ CEMADEN RJ - $(date '+%Y-%m-%d %H:%M:%S')"
-
-
-            git pull origin main \
-              --rebase \
-              --autostash || true
-
-
-            git push origin main
+            echo ""
+            echo "A base não sofreu alterações."
 
           else
 
-            echo "Nenhuma alteração para commit."
+            git commit \
+              -m "Atualização CEMADEN RJ"
+
+
+            git pull \
+              origin \
+              main \
+              --rebase \
+              --autostash
+
+
+            git push \
+              origin \
+              HEAD:main
+
+
+            echo ""
+            echo "=================================================="
+            echo "BASE SALVA COM SUCESSO"
+            echo "=================================================="
 
           fi
 
 
-      # ==========================================================
-      # SSH - SHINY SERVER
-      #
-      # Secrets:
-      #
-      # DEPLOY_HOST
-      # DEPLOY_USER
-      # DEPLOY_KEY
-      # ==========================================================
-
-      - name: Configurar SSH do Shiny
-
-        if: >-
-          ${{ secrets.DEPLOY_HOST != '' &&
-              secrets.DEPLOY_USER != '' &&
-              secrets.DEPLOY_KEY != '' }}
-
-        shell: bash
-
-        env:
-
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-
-        run: |
-
-          set -e
-
-          mkdir -p ~/.ssh
-
-
-          printf '%s\n' "$DEPLOY_KEY" \
-            > ~/.ssh/cemaden_deploy
-
-
-          chmod 600 \
-            ~/.ssh/cemaden_deploy
-
-
-          ssh-keyscan -H \
-            "${{ secrets.DEPLOY_HOST }}" \
-            >> ~/.ssh/known_hosts
-
-
-      # ==========================================================
-      # COPIAR BASE DIRETAMENTE PARA O SHINY
-      # ==========================================================
-
-      - name: Atualizar base do Shiny
-
-        if: >-
-          ${{ secrets.DEPLOY_HOST != '' &&
-              secrets.DEPLOY_USER != '' &&
-              secrets.DEPLOY_KEY != '' }}
-
-        shell: bash
-
-        run: |
-
-          set -e
-
-
-          scp \
-            -i ~/.ssh/cemaden_deploy \
-            -o StrictHostKeyChecking=yes \
-            base_cemaden.rda \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/srv/shiny-server/cemaden/base_cemaden.rda"
-
-
-      # ==========================================================
-      # ATUALIZAR APP.R
-      # ==========================================================
-
-      - name: Atualizar app.R
-
-        if: >-
-          ${{ secrets.DEPLOY_HOST != '' &&
-              secrets.DEPLOY_USER != '' &&
-              secrets.DEPLOY_KEY != '' }}
-
-        shell: bash
-
-        run: |
-
-          set -e
-
-
-          ssh \
-            -i ~/.ssh/cemaden_deploy \
-            -o StrictHostKeyChecking=yes \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "touch /srv/shiny-server/cemaden/app.R"
-
-
-      # ==========================================================
-      # VERIFICAR DEPLOY
-      # ==========================================================
-
-      - name: Verificar atualização no Shiny
-
-        if: >-
-          ${{ secrets.DEPLOY_HOST != '' &&
-              secrets.DEPLOY_USER != '' &&
-              secrets.DEPLOY_KEY != '' }}
-
-        shell: bash
-
-        run: |
-
-          set -e
-
-
-          ssh \
-            -i ~/.ssh/cemaden_deploy \
-            -o StrictHostKeyChecking=yes \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "ls -lh /srv/shiny-server/cemaden/base_cemaden.rda"
-
-
-          echo "Deploy CEMADEN concluído."
-
-
-      # ==========================================================
-      # LIMPAR SSH
-      # ==========================================================
-
-      - name: Limpar chave SSH
-
-        if: always()
-
-        shell: bash
-
-        run: |
-
-          rm -f ~/.ssh/cemaden_deploy
-
-
-      # ==========================================================
-      # FINAL
-      # ==========================================================
-
-      - name: Finalização
-
-        if: success()
-
-        shell: bash
-
-        run: |
-
           echo ""
+          echo "Arquivo final na raiz:"
 
-          echo "===================================================="
-
-          echo " CEMADEN/RJ"
-
-          echo " ATUALIZAÇÃO CONCLUÍDA COM SUCESSO"
-
-          echo "===================================================="
-
-          echo ""
-
-          echo "Base: base_cemaden.rda"
-
-          echo "Municípios: 92"
-
-          echo "Frequência: a cada 30 minutos"
-
-          echo "GPKG: ${CEMADEN_GPKG_URL}"
-
-          echo ""
+          ls -lh \
+            base_cemaden.rda
