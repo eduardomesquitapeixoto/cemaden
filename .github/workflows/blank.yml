@@ -29,6 +29,7 @@ jobs:
       CEMADEN_GPKG_URL: https://cisshiny.saude.rj.gov.br/docs/rj_mun.gpkg
       CEMADEN_OUTPUT: base_cemaden.rda
 
+
     steps:
 
       # ==========================================================
@@ -114,7 +115,7 @@ jobs:
 
 
       # ==========================================================
-      # PREPARAR AMBIENTE
+      # PREPARAR DIRETÓRIO TEMPORÁRIO
       # ==========================================================
 
       - name: Preparar ambiente
@@ -134,26 +135,21 @@ jobs:
 
 
       # ==========================================================
-      # BAIXAR GPKG
+      # BAIXAR MALHA MUNICIPAL
       # ==========================================================
 
-      - name: Baixar malha municipal RJ
+      - name: Baixar GPKG municipal
         shell: bash
         run: |
 
           set -e
 
           echo "=================================================="
-          echo "BAIXANDO MALHA MUNICIPAL DO RJ"
+          echo "BAIXANDO MALHA MUNICIPAL"
           echo "=================================================="
 
-          echo ""
           echo "URL:"
           echo "${CEMADEN_GPKG_URL}"
-
-          echo ""
-          echo "Destino:"
-          echo "${CEMADEN_GPKG}"
 
           curl \
             --fail \
@@ -203,6 +199,19 @@ jobs:
         run: |
 
           cat > atualiza_cemaden.R <<'EOF_R'
+
+          # ==========================================================
+          # ATUALIZAÇÃO DOS DADOS DO CEMADEN
+          #
+          # Autoria:
+          # Eduardo Peixoto - CIEVS/RJ
+          #
+          # Saída:
+          # base_cemaden.rda
+          #
+          # O arquivo é salvo diretamente na raiz do repositório.
+          # ==========================================================
+
 
           options(
             warn = 1,
@@ -338,19 +347,12 @@ jobs:
                   httr::user_agent(
 
                     paste0(
-
                       "Mozilla/5.0 ",
-
                       "(X11; Linux x86_64) ",
-
                       "AppleWebKit/537.36 ",
-
                       "(KHTML, like Gecko) ",
-
                       "Chrome/154.0.0.0 ",
-
                       "Safari/537.36"
-
                     )
 
                   )
@@ -449,6 +451,7 @@ jobs:
                   "Acesso realizado com sucesso.\n"
                 )
 
+
                 return(
                   resultado
                 )
@@ -488,23 +491,415 @@ jobs:
               paste(
 
                 "Falha ao acessar",
-
                 url,
-
                 "após",
-
                 tentativas,
-
                 "tentativas.",
-
                 "Último erro:",
-
                 ultimo_erro
 
               ),
 
               call. = FALSE
 
+            )
+
+          }
+
+
+          # ==========================================================
+          # FUNÇÃO PARA NORMALIZAR NOMES DAS REGIÕES
+          # ==========================================================
+
+          normalizar_regiao <- function(x) {
+
+            x |>
+              stringr::str_to_upper() |>
+              stringr::str_squish()
+
+          }
+
+
+          # ==========================================================
+          # FUNÇÃO PARA EXTRAIR REDEC
+          #
+          # Estrutura atual:
+          #
+          # BAIXADA FLUMINENSE - BAIXO - Histórico da Redec
+          #
+          # Não depende da classe CSS bg-success.
+          # ==========================================================
+
+          extrair_redec <- function(
+            html,
+            action
+          ) {
+
+            pagina <- xml2::read_html(
+              html
+            )
+
+
+            # --------------------------------------------------------
+            # Primeira tentativa:
+            # elementos li da lista
+            # --------------------------------------------------------
+
+            elementos <- rvest::html_elements(
+              pagina,
+              "ul.list-group li"
+            )
+
+
+            valores <- rvest::html_text2(
+              elementos
+            )
+
+
+            valores <- stringr::str_squish(
+              valores
+            )
+
+
+            valores <- valores[
+              nzchar(valores)
+            ]
+
+
+            # --------------------------------------------------------
+            # Manter somente linhas contendo:
+            #
+            # REGIÃO - NÍVEL - Histórico da Redec
+            # --------------------------------------------------------
+
+            valores <- valores[
+
+              stringr::str_detect(
+
+                valores,
+
+                stringr::regex(
+                  "Histórico da Redec",
+                  ignore_case = TRUE
+                )
+
+              )
+
+            ]
+
+
+            # --------------------------------------------------------
+            # Fallback para alterações futuras do HTML
+            # --------------------------------------------------------
+
+            if (
+              length(valores) == 0
+            ) {
+
+              elementos <- rvest::html_elements(
+
+                pagina,
+
+                xpath =
+                  '//*[contains(normalize-space(.), "Histórico da Redec")]'
+
+              )
+
+
+              valores <- rvest::html_text2(
+                elementos
+              )
+
+
+              valores <- stringr::str_squish(
+                valores
+              )
+
+
+              valores <- valores[
+                nzchar(valores)
+              ]
+
+
+              valores <- valores[
+
+                stringr::str_detect(
+
+                  valores,
+
+                  stringr::regex(
+                    "Histórico da Redec",
+                    ignore_case = TRUE
+                  )
+
+                )
+
+              ]
+
+            }
+
+
+            valores <- unique(
+              valores
+            )
+
+
+            cat(
+              "Action:",
+              action,
+              "| registros encontrados:",
+              length(valores),
+              "\n"
+            )
+
+
+            if (
+              length(valores) == 0
+            ) {
+
+              stop(
+
+                paste(
+                  "Nenhuma região encontrada para action",
+                  action
+                ),
+
+                call. = FALSE
+
+              )
+
+            }
+
+
+            # --------------------------------------------------------
+            # Extrair região e nível
+            # --------------------------------------------------------
+
+            resultado <- tibble::tibble(
+
+              value = valores
+
+            ) |>
+
+              dplyr::mutate(
+
+                regiao = stringr::str_extract(
+
+                  value,
+
+                  "^[^-]+"
+
+                ) |>
+
+                  stringr::str_trim(),
+
+
+                nivel = stringr::str_match(
+
+                  value,
+
+                  "^[^-]+\\s*-\\s*(.*?)\\s*-\\s*Histórico da Redec"
+
+                )[, 2] |>
+
+                  stringr::str_trim()
+
+              ) |>
+
+              dplyr::select(
+
+                regiao,
+                nivel
+
+              ) |>
+
+              janitor::clean_names()
+
+
+            # --------------------------------------------------------
+            # Normalizar
+            # --------------------------------------------------------
+
+            resultado <- resultado |>
+
+              dplyr::mutate(
+
+                regiao =
+                  normalizar_regiao(regiao),
+
+                nivel =
+                  stringr::str_squish(nivel)
+
+              ) |>
+
+              dplyr::filter(
+
+                !is.na(regiao),
+                regiao != "",
+                !is.na(nivel),
+                nivel != ""
+
+              ) |>
+
+              dplyr::distinct(
+
+                regiao,
+
+                .keep_all = TRUE
+
+              )
+
+
+            cat(
+              "Action:",
+              action,
+              "| regiões válidas:",
+              nrow(resultado),
+              "\n"
+            )
+
+
+            if (
+              nrow(resultado) == 0
+            ) {
+
+              stop(
+
+                paste(
+                  "Nenhuma região válida encontrada para action",
+                  action
+                ),
+
+                call. = FALSE
+
+              )
+
+            }
+
+
+            print(
+              resultado
+            )
+
+
+            resultado
+
+          }
+
+
+          # ==========================================================
+          # VALIDAR REGIÕES
+          # ==========================================================
+
+          regioes_esperadas <- c(
+
+            "BAIXADA FLUMINENSE",
+            "BAIXADA LITORÂNEA",
+            "CAPITAL",
+            "COSTA VERDE",
+            "METROPOLITANA",
+            "NOROESTE",
+            "NORTE",
+            "SERRANA I",
+            "SERRANA II",
+            "SUL I",
+            "SUL II"
+
+          )
+
+
+          validar_regioes <- function(
+            tabela,
+            nome
+          ) {
+
+            faltantes <- setdiff(
+
+              regioes_esperadas,
+
+              tabela$regiao
+
+            )
+
+
+            extras <- setdiff(
+
+              tabela$regiao,
+
+              regioes_esperadas
+
+            )
+
+
+            if (
+              length(faltantes) > 0
+            ) {
+
+              stop(
+
+                paste0(
+
+                  nome,
+                  ": regiões ausentes: ",
+                  paste(
+                    faltantes,
+                    collapse = ", "
+                  )
+
+                ),
+
+                call. = FALSE
+
+              )
+
+            }
+
+
+            if (
+              length(extras) > 0
+            ) {
+
+              warning(
+
+                paste0(
+
+                  nome,
+                  ": regiões adicionais encontradas: ",
+                  paste(
+                    extras,
+                    collapse = ", "
+                  )
+
+                )
+
+              )
+
+            }
+
+
+            if (
+              nrow(tabela) != 11
+            ) {
+
+              stop(
+
+                paste0(
+
+                  nome,
+                  ": esperado 11 regiões; encontrado ",
+                  nrow(tabela)
+
+                ),
+
+                call. = FALSE
+
+              )
+
+            }
+
+
+            invisible(
+              TRUE
             )
 
           }
@@ -609,7 +1004,6 @@ jobs:
               tabela <- purrr::pluck(
 
                 tabelas,
-
                 1
 
               )
@@ -634,8 +1028,8 @@ jobs:
 
 
               # ------------------------------------------------------
-              # CORREÇÃO:
-              # não usar nrow(.) dentro de magrittr::extract()
+              # Remove última linha sem usar magrittr::extract()
+              # com "." dentro de pipe
               # ------------------------------------------------------
 
               tabela <- tabela[
@@ -645,18 +1039,14 @@ jobs:
                 ),
 
                 ,
-
                 drop = FALSE
 
               ]
 
 
-              tabela <- janitor::clean_names(
+              janitor::clean_names(
                 tabela
               )
-
-
-              tabela
 
             }
 
@@ -707,11 +1097,41 @@ jobs:
           )
 
 
+          # Normalizar município
+          base1 <- base1 |>
+
+            dplyr::mutate(
+
+              municipio =
+                normalizar_regiao(municipio)
+
+            )
+
+
           cat(
             "Registros base1:",
             nrow(base1),
             "\n"
           )
+
+
+          if (
+            nrow(base1) < 92
+          ) {
+
+            stop(
+
+              paste0(
+                "Webscraping 1 retornou somente ",
+                nrow(base1),
+                " municípios."
+              ),
+
+              call. = FALSE
+
+            )
+
+          }
 
 
           # ==========================================================
@@ -726,120 +1146,119 @@ jobs:
           cat("============================================================\n")
 
 
-          base2 <- purrr::map(
+          # ----------------------------------------------------------
+          # IMPORTANTE:
+          #
+          # Estrutura atual do CEMADEN:
+          #
+          # action=1 -> Risco de Incêndio Florestal
+          # action=2 -> Nível de Severidade Meteorológica
+          #
+          # Não usar mais bg-success.
+          # ----------------------------------------------------------
 
-            c(
-              "1",
-              "2"
-            ),
+          html_incendio <- baixar_html(
 
-            function(tipo) {
+            paste0(
 
-              url <- paste0(
+              base_url_http,
 
-                base_url_http,
+              "/monitoramento/v2/mapa/redec.php?action=1"
 
-                "/monitoramento/v2/mapa/redec.php?action=",
+            )
 
-                tipo
-
-              )
-
-
-              html <- baixar_html(
-                url
-              )
-
-
-              resultado <- html |>
-
-                xml2::read_html() |>
-
-                rvest::html_elements(
-
-                  xpath =
-                    '//*[contains(concat( " ", @class, " " ), concat( " ", "bg-success", " " ))]'
-
-                ) |>
-
-                rvest::html_text() |>
-
-                tibble::as_tibble() |>
-
-                dplyr::mutate(
-
-                  regiao =
-                    stringr::str_extract(
-                      value,
-                      "^[^-]+"
-                    ) |>
-                    stringr::str_trim(),
-
-                  nivel =
-                    stringr::str_extract(
-                      value,
-                      "(?<=- ).*(?=-)"
-                    ) |>
-                    stringr::str_trim()
-
-                ) |>
-
-                dplyr::select(
-                  -value
-                ) |>
-
-                janitor::clean_names()
+          )
 
 
-              if (
-                nrow(resultado) == 0
-              ) {
+          html_meteorologico <- baixar_html(
 
-                stop(
+            paste0(
 
-                  paste(
-                    "Nenhuma região encontrada para action",
-                    tipo
-                  ),
+              base_url_http,
 
-                  call. = FALSE
+              "/monitoramento/v2/mapa/redec.php?action=2"
 
-                )
+            )
 
-              }
+          )
 
 
-              resultado
+          incendio <- extrair_redec(
 
-            }
+            html_incendio,
+
+            "1"
 
           ) |>
 
-            purrr::reduce(
+            dplyr::rename(
 
-              full_join,
+              risco_incendio = nivel
 
-              by = "regiao"
+            )
 
-            ) |>
 
-            janitor::clean_names() |>
+          meteorologico <- extrair_redec(
 
-            dplyr::mutate(
+            html_meteorologico,
 
-              risco_metereologico =
-                nivel_x,
+            "2"
 
-              risco_incendio =
-                nivel_y
+          ) |>
 
-            ) |>
+            dplyr::rename(
+
+              risco_metereologico = nivel
+
+            )
+
+
+          # ----------------------------------------------------------
+          # Validar as duas fontes
+          # ----------------------------------------------------------
+
+          validar_regioes(
+
+            incendio,
+
+            "Incêndio"
+
+          )
+
+
+          validar_regioes(
+
+            meteorologico,
+
+            "Meteorológico"
+
+          )
+
+
+          # ----------------------------------------------------------
+          # Consolidar
+          # ----------------------------------------------------------
+
+          base2 <- dplyr::full_join(
+
+            meteorologico,
+
+            incendio,
+
+            by = "regiao"
+
+          )
+
+
+          base2 <- base2 |>
 
             dplyr::select(
 
-              -nivel_x,
+              regiao,
 
-              -nivel_y
+              risco_metereologico,
+
+              risco_incendio
 
             )
 
@@ -849,6 +1268,27 @@ jobs:
             nrow(base2),
             "\n"
           )
+
+
+          if (
+            nrow(base2) != 11
+          ) {
+
+            stop(
+
+              paste0(
+
+                "ERRO: base2 deveria conter 11 regiões; ",
+                "encontradas ",
+                nrow(base2)
+
+              ),
+
+              call. = FALSE
+
+            )
+
+          }
 
 
           # ==========================================================
@@ -878,13 +1318,13 @@ jobs:
             dplyr::mutate(
 
               regiao =
-                stringr::str_squish(
+                normalizar_regiao(
                   redec_hidrologico
                 )
 
             ) |>
 
-            dplyr::full_join(
+            dplyr::left_join(
 
               base2,
 
@@ -917,7 +1357,76 @@ jobs:
 
 
           # ==========================================================
-          # CARREGAR MALHA MUNICIPAL
+          # VALIDAR BASE3
+          # ==========================================================
+
+          if (
+            nrow(base3) < 92
+          ) {
+
+            stop(
+
+              paste0(
+
+                "ERRO: base3 possui somente ",
+                nrow(base3),
+                " registros."
+
+              ),
+
+              call. = FALSE
+
+            )
+
+          }
+
+
+          faltantes_risco <- base3 |>
+
+            dplyr::filter(
+
+              is.na(risco_metereologico) |
+              is.na(risco_incendio)
+
+            )
+
+
+          if (
+            nrow(faltantes_risco) > 0
+          ) {
+
+            cat("\n")
+            cat("ATENÇÃO: municípios sem risco de REDEC:\n")
+
+            print(
+              faltantes_risco |>
+                dplyr::select(
+                  municipio,
+                  regiao,
+                  risco_metereologico,
+                  risco_incendio
+                )
+            )
+
+            stop(
+
+              paste0(
+
+                "Existem ",
+                nrow(faltantes_risco),
+                " municípios sem risco meteorológico/incêndio."
+
+              ),
+
+              call. = FALSE
+
+            )
+
+          }
+
+
+          # ==========================================================
+          # CARREGAR MALHA
           # ==========================================================
 
           cat("\n")
@@ -957,18 +1466,47 @@ jobs:
           }
 
 
+          # ----------------------------------------------------------
+          # A malha deve conter exatamente 92 municípios
+          # ----------------------------------------------------------
+
+          if (
+            nrow(rj_mun) != 92
+          ) {
+
+            stop(
+
+              paste0(
+
+                "ERRO: GPKG deveria conter 92 municípios; ",
+                "encontrados ",
+                nrow(rj_mun)
+
+              ),
+
+              call. = FALSE
+
+            )
+
+          }
+
+
+          # ==========================================================
+          # JOIN MALHA + DADOS
+          # ==========================================================
+
           rj_mun <- rj_mun |>
 
             dplyr::mutate(
 
               mun_tipo_6 =
-                toupper(
+                normalizar_regiao(
                   name_muni
                 )
 
             ) |>
 
-            dplyr::full_join(
+            dplyr::left_join(
 
               base3,
 
@@ -981,292 +1519,31 @@ jobs:
 
 
           # ==========================================================
-          # WEBSCRAPING 3
-          # HISTÓRICO DA REDEC
-          # ==========================================================
-
-          cat("\n")
-          cat("============================================================\n")
-          cat("WEBSCRAPING 3\n")
-          cat("HISTÓRICO DA REDEC\n")
-          cat("============================================================\n")
-
-
-          url_historico <- paste0(
-
-            base_url_https,
-
-            "/monitoramento/v2/mapa/redec.php?action=2"
-
-          )
-
-
-          html_historico <- baixar_html(
-
-            url_historico
-
-          )
-
-
-          page <- xml2::read_html(
-
-            html_historico
-
-          )
-
-
-          ul_element <- rvest::html_elements(
-
-            page,
-
-            "ul.list-group"
-
-          )
-
-
-          if (
-            length(ul_element) == 0
-          ) {
-
-            stop(
-
-              "ul.list-group não encontrado.",
-
-              call. = FALSE
-
-            )
-
-          }
-
-
-          html_table <- rvest::html_text(
-
-            ul_element
-
-          )
-
-
-          table_rows <- strsplit(
-
-            html_table,
-
-            "Histórico da Redec"
-
-          )[[1]]
-
-
-          table_rows <- trimws(
-
-            table_rows
-
-          )
-
-
-          table_rows <- table_rows[
-
-            nzchar(
-              table_rows
-            )
-
-          ]
-
-
-          if (
-            length(table_rows) == 0
-          ) {
-
-            stop(
-
-              "Nenhuma linha encontrada no histórico da REDEC.",
-
-              call. = FALSE
-
-            )
-
-          }
-
-
-          # ==========================================================
-          # TRANSFORMAR HISTÓRICO
-          # ==========================================================
-
-          table_data <- lapply(
-
-            table_rows,
-
-            function(row) {
-
-              region <- gsub(
-
-                " - .*",
-
-                "",
-
-                row
-
-              )
-
-
-              status <- gsub(
-
-                ".* - (.*?) - .*",
-
-                "\\1",
-
-                row
-
-              )
-
-
-              history <- gsub(
-
-                ".*Histórico da Redec(.*)",
-
-                "\\1",
-
-                row
-
-              )
-
-
-              data.frame(
-
-                Region =
-                  region,
-
-                Status =
-                  status,
-
-                History =
-                  history,
-
-                stringsAsFactors =
-                  FALSE
-
-              )
-
-            }
-
-          )
-
-
-          table_df <- do.call(
-
-            rbind,
-
-            table_data
-
-          )
-
-
-          table_df <- head(
-
-            table_df,
-
-            11
-
-          )
-
-
-          # ==========================================================
-          # EXTRAIR STATUS
-          # ==========================================================
-
-          table_df$Status <-
-
-            stringr::str_extract(
-
-              table_df$Status,
-
-              "(?<=-).*"
-
-            ) |>
-
-            stringr::str_trim()
-
-
-          table_df$regiao <-
-            table_df$Region
-
-
-          # ==========================================================
-          # JOIN FINAL
-          # ==========================================================
-
-          a <- dplyr::full_join(
-
-            rj_mun,
-
-            table_df,
-
-            by = "regiao"
-
-          )
-
-
-          # ==========================================================
-          # STATUS -> RISCO DE INCÊNDIO
+          # CORREÇÃO ESPECÍFICA DA BAIXADA LITORÂNEA
+          #
+          # Mantida a regra existente no script original.
+          #
+          # A correção só é aplicada se houver registro extra
+          # disponível, evitando erro de índice.
           # ==========================================================
 
           if (
-            "Status" %in% names(a)
+            nrow(rj_mun) >= 5 &&
+            nrow(rj_mun) >= 93
           ) {
 
-            a$risco_incendio <-
-              a$Status
-
-            a$Status <- NULL
-
-          }
+            rj_mun$risco_atual_hidrologico[5] <-
+              rj_mun$risco_atual_hidrologico[93]
 
 
-          # ==========================================================
-          # CORREÇÃO ORIGINAL
-          # ==========================================================
-
-          if (
-            nrow(a) >= 93
-          ) {
-
-            a$risco_atual_hidrologico[5] <-
-              a$risco_atual_hidrologico[93]
+            rj_mun$risco_atual_geologico[5] <-
+              rj_mun$risco_atual_geologico[93]
 
 
-            a$risco_atual_geologico[5] <-
-              a$risco_atual_geologico[93]
-
-
-            a$risco_incendio[5] <-
-              a$risco_incendio[93]
-
-
-            if (
-              "Region" %in% names(a)
-            ) {
-
-              a$Region[5] <-
-                "BAIXADA LITORÂNEA"
-
-            }
-
-
-            a$regiao[5] <-
-              "BAIXADA LITORÂNEA"
+            rj_mun$risco_incendio[5] <-
+              rj_mun$risco_incendio[93]
 
           }
-
-
-          # ==========================================================
-          # 92 MUNICÍPIOS
-          # ==========================================================
-
-          rj_mun <- head(
-
-            a,
-
-            92
-
-          )
 
 
           # ==========================================================
@@ -1402,13 +1679,40 @@ jobs:
 
 
           # ==========================================================
-          # SALVAR SOMENTE BASE_CEMADEN.RDA
-          # NA RAIZ DO REPOSITÓRIO
+          # VALIDAR VALORES DE RISCO
+          # ==========================================================
+
+          cat("\n")
+          cat("Valores meteorológicos:\n")
+
+          print(
+            sort(
+              unique(
+                rj_mun$risco_metereologico
+              )
+            )
+          )
+
+
+          cat("\n")
+          cat("Valores de incêndio:\n")
+
+          print(
+            sort(
+              unique(
+                rj_mun$risco_incendio
+              )
+            )
+          )
+
+
+          # ==========================================================
+          # SALVAR SOMENTE NA RAIZ DO PROJETO
           # ==========================================================
 
           cat("\n")
           cat("============================================================\n")
-          cat("SALVANDO BASE NA RAIZ\n")
+          cat("SALVANDO BASE\n")
           cat("============================================================\n")
 
 
@@ -1420,6 +1724,10 @@ jobs:
 
           )
 
+
+          # ==========================================================
+          # VALIDAR ARQUIVO
+          # ==========================================================
 
           if (
             !file.exists(output_path)
@@ -1481,20 +1789,34 @@ jobs:
           )
 
 
+          # ==========================================================
+          # FINAL
+          # ==========================================================
+
           cat("\n")
           cat("============================================================\n")
           cat(" CEMADEN/RJ ATUALIZADO COM SUCESSO\n")
           cat("============================================================\n")
 
 
+          cat(
+            "Fim:",
+            format(
+              Sys.time(),
+              "%Y-%m-%d %H:%M:%S"
+            ),
+            "\n"
+          )
+
+
           EOF_R
 
 
       # ==========================================================
-      # EXECUTAR SCRAPING
+      # EXECUTAR SCRIPT
       # ==========================================================
 
-      - name: Executar atualização CEMADEN
+      - name: Executar atualização
         shell: bash
         run: |
 
@@ -1504,15 +1826,12 @@ jobs:
           echo "EXECUTANDO SCRAPING CEMADEN"
           echo "=================================================="
 
-
           Rscript atualiza_cemaden.R
-
 
           echo ""
           echo "=================================================="
-          echo "VALIDANDO ARQUIVO GERADO"
+          echo "VALIDAÇÃO DO RESULTADO"
           echo "=================================================="
-
 
           if [ ! -f base_cemaden.rda ]; then
 
@@ -1522,7 +1841,6 @@ jobs:
 
           fi
 
-
           if [ ! -s base_cemaden.rda ]; then
 
             echo "ERRO: base_cemaden.rda está vazio."
@@ -1531,15 +1849,17 @@ jobs:
 
           fi
 
+          echo ""
+          echo "Arquivo gerado:"
 
           ls -lh base_cemaden.rda
 
 
       # ==========================================================
-      # VALIDAR CONTEÚDO DO RDA
+      # VALIDAR RDA
       # ==========================================================
 
-      - name: Validar conteúdo do RDA
+      - name: Validar RDA
         shell: bash
         run: |
 
@@ -1571,7 +1891,7 @@ jobs:
           ) {
 
             stop(
-              "Objeto rj_mun não é um objeto sf."
+              "Objeto rj_mun não é sf."
             )
 
           }
@@ -1588,6 +1908,82 @@ jobs:
                 "Esperados 92 municípios; encontrados ",
 
                 nrow(rj_mun)
+
+              )
+
+            )
+
+          }
+
+
+          colunas <- c(
+
+            "name_muni",
+
+            "regiao",
+
+            "risco_atual_hidrologico",
+
+            "risco_atual_geologico",
+
+            "risco_metereologico",
+
+            "risco_incendio"
+
+          )
+
+
+          faltantes <- setdiff(
+
+            colunas,
+
+            names(rj_mun)
+
+          )
+
+
+          if (
+            length(faltantes) > 0
+          ) {
+
+            stop(
+
+              paste0(
+
+                "Colunas ausentes: ",
+
+                paste(
+                  faltantes,
+                  collapse = ", "
+                )
+
+              )
+
+            )
+
+          }
+
+
+          municipios_validos <- sum(
+
+            !is.na(
+              rj_mun$name_muni
+            )
+
+          )
+
+
+          if (
+            municipios_validos != 92
+          ) {
+
+            stop(
+
+              paste0(
+
+                "Esperados 92 municípios válidos; encontrados ",
+
+                municipios_validos
 
               )
 
@@ -1614,14 +2010,25 @@ jobs:
             "\n"
           )
 
+
+          cat(
+            "CRS:",
+            sf::st_crs(rj_mun)$input,
+            "\n"
+          )
+
+
           EOF_R
 
 
       # ==========================================================
-      # COMMIT + PUSH
+      # COMMIT E PUSH
       #
-      # SOMENTE base_cemaden.rda
-      # É SALVO NA RAIZ DO REPOSITÓRIO.
+      # O ÚNICO ARQUIVO PERSISTIDO PELO WORKFLOW É:
+      #
+      #     base_cemaden.rda
+      #
+      # NA RAIZ DO REPOSITÓRIO.
       # ==========================================================
 
       - name: Salvar base na raiz do projeto
@@ -1631,7 +2038,7 @@ jobs:
           set -e
 
           echo "=================================================="
-          echo "SALVANDO base_cemaden.rda"
+          echo "SALVANDO BASE NA RAIZ DO PROJETO"
           echo "=================================================="
 
 
@@ -1645,6 +2052,10 @@ jobs:
             "41898282+github-actions[bot]@users.noreply.github.com"
 
 
+          # ----------------------------------------------------------
+          # Garantir que somente a base seja adicionada
+          # ----------------------------------------------------------
+
           git add \
             base_cemaden.rda
 
@@ -1652,16 +2063,17 @@ jobs:
           if git diff --cached --quiet; then
 
             echo ""
-            echo "Nenhuma alteração na base."
+            echo "A base não sofreu alterações."
 
           else
-
-            echo ""
-            echo "Alteração detectada."
 
             git commit \
               -m "Atualização CEMADEN RJ"
 
+
+            # --------------------------------------------------------
+            # Atualizar branch antes do push
+            # --------------------------------------------------------
 
             git pull \
               origin \
@@ -1677,15 +2089,14 @@ jobs:
 
             echo ""
             echo "=================================================="
-            echo "BASE CEMADEN SALVA NA RAIZ DO PROJETO"
+            echo "BASE SALVA COM SUCESSO"
             echo "=================================================="
-
 
           fi
 
 
           echo ""
-          echo "Arquivo final:"
+          echo "Arquivo final na raiz:"
 
           ls -lh \
             base_cemaden.rda
