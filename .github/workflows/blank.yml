@@ -2,7 +2,6 @@ name: Atualização CEMADEN RJ
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
 
   workflow_dispatch:
 
